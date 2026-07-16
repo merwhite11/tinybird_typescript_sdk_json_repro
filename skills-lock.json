@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "tinybird-typescript-sdk-guidelines": {
+      "source": "tinybirdco/tinybird-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tinybird-typescript-sdk-guidelines/SKILL.md",
+      "computedHash": "b05e3924ea0f220fea4bb98bc0c3cdb7317384c4e8e40809dcf7e6c999bff351"
+    }
+  }
+}
