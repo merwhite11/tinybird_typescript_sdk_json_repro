@@ -101,20 +101,17 @@ export const jsonEcho = defineEndpoint("json_echo", {
     node({
       name: "echo",
       sql: `
-        SELECT value
-        FROM (
-          SELECT 0 AS value
-          {% for key, value in JSON(configOverrides, '{}') %}
-          UNION ALL SELECT {{ Int32(value) }} AS value
+        SELECT
+          0
+          {% for k in JSON(configOverrides, '{}') %}
+          + 1
           {% end %}
-        )
-        WHERE value != 0
-        ORDER BY value
+          AS key_count
       `,
     }),
   ],
   output: {
-    value: t.int32(),
+    key_count: t.int32(),
   },
 });
 

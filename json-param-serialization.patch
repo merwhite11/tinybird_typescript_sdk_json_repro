@@ -1,0 +1,198 @@
+From 2d32bffa9733c17bac13e47d2ad101c9404c8da8 Mon Sep 17 00:00:00 2001
+From: Meredith White <meredith.white@tinybird.co>
+Date: Mon, 20 Jul 2026 15:48:51 -0700
+Subject: [PATCH] Serialize p.json() query params as JSON strings
+
+Query params declared with p.json() are typed to accept a structured
+object, but query() serialized every non-array value with String(value),
+turning { configOverrides: { foo: 1 } } into "[object Object]". The
+server's JSON() template function then json.loads() that and fails with
+"Error parsing JSON: '[object Object]'".
+
+Serialize plain objects with JSON.stringify. Arrays containing objects
+(JSON array params) are serialized as a single JSON string; arrays of
+primitives (Array params) keep their per-element append behavior.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md        |  6 ++++
+ src/api/api.test.ts | 70 +++++++++++++++++++++++++++++++++++++++++++++
+ src/api/api.ts      | 48 +++++++++++++++++++++++++------
+ 3 files changed, 116 insertions(+), 8 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 74e420c..df2363a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+ 
++## [Unreleased]
++
++### Fixed
++
++- Query params declared with `p.json()` are now serialized with `JSON.stringify` instead of `String(value)`. Passing an object (e.g. `{ configOverrides: { foo: 1 } }`) previously sent `configOverrides=[object Object]`, which the server's `JSON()` template function rejected with `Error parsing JSON: '[object Object]'`. Arrays of objects are likewise serialized as a single JSON string; arrays of primitives (Array params) are unchanged.
++
+ ## [0.0.82] - 2026-07-15
+ 
+ ### Changed
+diff --git a/src/api/api.test.ts b/src/api/api.test.ts
+index 2480cec..b4dd982 100644
+--- a/src/api/api.test.ts
++++ b/src/api/api.test.ts
+@@ -129,6 +129,76 @@ describe("TinybirdApi", () => {
+     expect(tagsParams).toEqual(["a", "b"]);
+   });
+ 
++  it("serializes object (p.json) query params as JSON strings", async () => {
++    let configOverridesParam: string | null = null;
++
++    server.use(
++      http.get(`${BASE_URL}/v0/pipes/json_echo.json`, ({ request }) => {
++        const url = new URL(request.url);
++        configOverridesParam = url.searchParams.get("configOverrides");
++        return HttpResponse.json({ data: [], meta: [], rows: 0 });
++      })
++    );
++
++    const api = createTinybirdApi({
++      baseUrl: BASE_URL,
++      token: "p.default-token",
++    });
++
++    await api.query("json_echo", {
++      configOverrides: { foo: 1, nested: { bar: [true, "x"] } },
++    });
++
++    // Without the fix this is "[object Object]", which the server rejects with
++    // "Error parsing JSON". The server's JSON() function json.loads() this.
++    expect(configOverridesParam).toBe(
++      JSON.stringify({ foo: 1, nested: { bar: [true, "x"] } })
++    );
++  });
++
++  it("serializes an array of objects as a single JSON string", async () => {
++    let filtersParam: string[] = [];
++
++    server.use(
++      http.get(`${BASE_URL}/v0/pipes/json_echo.json`, ({ request }) => {
++        const url = new URL(request.url);
++        filtersParam = url.searchParams.getAll("filters");
++        return HttpResponse.json({ data: [], meta: [], rows: 0 });
++      })
++    );
++
++    const api = createTinybirdApi({
++      baseUrl: BASE_URL,
++      token: "p.default-token",
++    });
++
++    await api.query("json_echo", { filters: [{ op: "eq" }, { op: "gt" }] });
++
++    // A JSON array param is one value, not multiple appended entries.
++    expect(filtersParam).toEqual([JSON.stringify([{ op: "eq" }, { op: "gt" }])]);
++  });
++
++  it("keeps appending primitive arrays as repeated params (Array params)", async () => {
++    let tagsParams: string[] = [];
++
++    server.use(
++      http.get(`${BASE_URL}/v0/pipes/top_pages.json`, ({ request }) => {
++        const url = new URL(request.url);
++        tagsParams = url.searchParams.getAll("tags");
++        return HttpResponse.json({ data: [], meta: [], rows: 0 });
++      })
++    );
++
++    const api = createTinybirdApi({
++      baseUrl: BASE_URL,
++      token: "p.default-token",
++    });
++
++    await api.query("top_pages", { tags: ["a", "b"] });
++
++    expect(tagsParams).toEqual(["a", "b"]);
++  });
++
+   it("throws when query params include Date values", async () => {
+     const api = createTinybirdApi({
+       baseUrl: BASE_URL,
+diff --git a/src/api/api.ts b/src/api/api.ts
+index dab93fe..f02886e 100644
+--- a/src/api/api.ts
++++ b/src/api/api.ts
+@@ -17,6 +17,27 @@ const DEFAULT_TIMEOUT = 30000;
+ const DEFAULT_INGEST_RETRY_503_BASE_DELAY_MS = 200;
+ const DEFAULT_INGEST_RETRY_503_MAX_DELAY_MS = 3000;
+ 
++/**
++ * Whether a query-param value must be serialized as JSON (a `p.json()` param)
++ * rather than stringified with `String()`. Plain objects qualify; arrays and
++ * Dates are handled separately by the caller.
++ */
++function isJsonParamValue(value: unknown): boolean {
++  return (
++    typeof value === "object" &&
++    value !== null &&
++    !Array.isArray(value) &&
++    !(value instanceof Date)
++  );
++}
++
++function dateNotSupportedMessage(key: string): string {
++  return (
++    `Date values are not supported for query parameter "${key}". ` +
++    "Pass a string in YYYY-MM-DD HH:MM:SS format (or YYYY-MM-DD HH:MM:SS.sss for DateTime64)."
++  );
++}
++
+ /**
+  * Public, decoupled Tinybird API wrapper configuration
+  */
+@@ -213,12 +234,17 @@ export class TinybirdApi {
+       }
+ 
+       if (Array.isArray(value)) {
++        // An array containing objects is a JSON-typed param (`p.json()`);
++        // Array() params only ever hold primitives. Serialize the whole array
++        // as a single JSON string rather than appending "[object Object]" per
++        // element.
++        if (value.some(isJsonParamValue)) {
++          url.searchParams.set(key, JSON.stringify(value));
++          continue;
++        }
+         for (const item of value) {
+           if (item instanceof Date) {
+-            throw new Error(
+-              `Date values are not supported for query parameter "${key}". ` +
+-                "Pass a string in YYYY-MM-DD HH:MM:SS format (or YYYY-MM-DD HH:MM:SS.sss for DateTime64)."
+-            );
++            throw new Error(dateNotSupportedMessage(key));
+           }
+           url.searchParams.append(key, String(item));
+         }
+@@ -226,10 +252,16 @@ export class TinybirdApi {
+       }
+ 
+       if (value instanceof Date) {
+-        throw new Error(
+-          `Date values are not supported for query parameter "${key}". ` +
+-            "Pass a string in YYYY-MM-DD HH:MM:SS format (or YYYY-MM-DD HH:MM:SS.sss for DateTime64)."
+-        );
++        throw new Error(dateNotSupportedMessage(key));
++      }
++
++      // Objects map to JSON-typed params (`p.json<TShape>()`). The server's
++      // JSON() template function json.loads() the raw query-string value, so
++      // it must receive a JSON string; String(value) would send the useless
++      // "[object Object]".
++      if (isJsonParamValue(value)) {
++        url.searchParams.set(key, JSON.stringify(value));
++        continue;
+       }
+ 
+       url.searchParams.set(key, String(value));
+-- 
+2.50.1 (Apple Git-155)
+
