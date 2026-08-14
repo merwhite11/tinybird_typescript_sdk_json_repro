@@ -7,6 +7,7 @@
 import {
   defineDatasource,
   defineEndpoint,
+  defineToken,
   Tinybird,
   node,
   t,
@@ -117,6 +118,32 @@ export const jsonEcho = defineEndpoint("json_echo", {
 
 export type JsonEchoParams = InferParams<typeof jsonEcho>;
 export type JsonEchoOutput = InferOutputRow<typeof jsonEcho>;
+
+// ============================================================================
+// Tokens
+// ============================================================================
+
+const appToken = defineToken("app_read");
+const ingestToken = defineToken("ingest_token");
+
+// Use in datasources with READ or APPEND scope
+export const events = defineDatasource("events", {
+  schema: {
+    timestamp: t.dateTime(),
+    event_name: t.string(),
+  },
+  tokens: [
+    { token: appToken, scope: "READ" },
+    { token: ingestToken, scope: "APPEND" },
+  ],
+});
+
+// Use in endpoints with READ scope
+export const topEvents = defineEndpoint("top_events", {
+  nodes: [node({ name: "endpoint", sql: "SELECT * FROM events LIMIT 10" })],
+  output: { timestamp: t.dateTime(), event_name: t.string() },
+  tokens: [{ token: appToken, scope: "READ" }],
+});
 
 // ============================================================================
 // Client

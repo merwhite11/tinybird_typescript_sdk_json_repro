@@ -3,6 +3,6 @@
     "lib/tinybird.ts"
   ],
   "token": "${TINYBIRD_TOKEN}",
-  "baseUrl": "https://api.us-east.aws.tinybird.co",
+  "baseUrl": "https://api.us-west-2.aws.tinybird.co",
   "devMode": "branch"
 }
