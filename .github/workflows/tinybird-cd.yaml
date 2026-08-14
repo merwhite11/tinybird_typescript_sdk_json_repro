@@ -8,6 +8,7 @@ on:
       - "tinybird.config.*"
       - "tinybird.json"
       - "**/*.ts"
+  workflow_dispatch: {}
 
 env:
   TINYBIRD_TOKEN: ${{ secrets.TINYBIRD_TOKEN }}
